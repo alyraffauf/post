@@ -1,0 +1,141 @@
+#!/usr/bin/ruby
+# Copyright (C) Alexandra Chace 2011-2013 <tchacex@gmail.com>
+# This file is part of Post.
+# Post is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# Post is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Lesser General Public License for more details.
+
+# You should have received a copy of the GNU Lesser General Public License
+# along with Post.  If not, see <http://www.gnu.org/licenses/>.
+
+STDOUT.sync = true
+PWD = Dir.pwd()
+
+require('rubygems')
+require('post')
+require('optparse')
+require('fileutils')
+
+LOGFILE = File.open("/var/log/post.log", "a")
+
+def puts(x, stdout = true)
+    message = "#{Time.now}: #{x}"
+    LOGFILE.puts(message)
+    if (stdout)
+        print("#{x}")
+    end
+end
+
+class PostFetch < Fetch
+    def get_file(url, file)
+        url = URI.parse(url)
+        file_name = File.basename(file)
+        saved_file = File.open(file, 'w')
+
+        Net::HTTP.new(url.host, url.port).request_get(url.path) do |response|
+            length = response['Content-Length'].to_i
+            saved_file_length = 0.0
+            response.read_body do |fragment|
+                saved_file << fragment
+                saved_file_length += fragment.length
+                progress = (saved_file_length / length) * 100
+                print("\rFetching:    #{file_name} [#{progress.round}%]")
+            end
+        end
+        saved_file.close()
+        print("\r")
+        puts("Fetched:     #{file_name} [100%]\n")
+    end
+end
+
+DATA = PackageDataBase.new()
+
+OPTIONS = {}
+OPTIONS[:root] = '/'
+
+puts('Loading:     Downloading package information.', stdout = false)
+DATA.update_database()
+
+def confirmation(queue)
+    return false if queue.empty?
+    puts("Queue:       #{queue.to_a.join(" ")}\n")
+    puts('Confirm:     [y/n] ')
+    return true if gets.include?('y')
+end
+
+def install_local_packages(args)
+    install = Fetch.new()
+    args.each do |package|
+        path = File.join(File.expand_path(PWD), package)
+        puts path
+        FileUtils.cp(path, "/tmp/post/#{File.basename(path)}")
+    end
+    if confirmation(args)
+        args.each { |package| install.do_install(File.basename(package)) }
+    end
+end
+
+def install_packages(args)
+    queue = PackageList.new(OPTIONS[:root])    
+    fetch = PostFetch.new(OPTIONS[:root])
+
+    begin
+        args.each { |package| queue.push(package) }
+        if confirmation(queue)
+            queue.each do |package|
+                fetch.fetch_package(package)
+                puts("Installing:  #{package}\n")
+                fetch.install_package(package)
+            end
+        end
+    rescue MismatchedHash => error
+        puts(error.message)
+    rescue ConflictingEntry => error
+        puts(error.message)
+    end
+end
+
+def remove_packages(args)
+    queue = PackageList.new(OPTIONS[:root])
+    args.each do |package|
+        queue.set(package) if DATA.installed?(package)
+    end
+    erase = Erase.new(OPTIONS[:root])
+    if confirmation(queue)
+        queue.each { |package| puts("Removing:    #{package}\n") }
+        queue.each { |package| erase.remove_package(package) }
+    end
+end
+
+options = ARGV.options()
+options.set_summary_indent('    ')
+options.banner =    "Usage: post [OPTIONS] [PACKAGES]"
+options.version =   "Post 2.0 (2.0.4)"
+options.define_head "Copyright (C) Alexandra Chace 2011-2013 <tchacex@gmail.com>"
+
+options.on( '--root=OPT', String, "Change the root filesystem." ) do |arg|
+        OPTIONS[:root] = arg
+        DATA.set_root(OPTIONS[:root])
+        DATA.update_database()
+    end
+options.on('-i', '--fetch PACKAGES', Array,
+    'Install a package.')  { |args| install_packages(args) }
+options.on('-l', '--install PACKAGES', Array,
+    'Install a local package.')  { |args| install_local_packages(args) }
+options.on('-r', '--erase PACKAGES', Array,
+    'Erase a package.') { |args| remove_packages(args) }
+options.on('-u', '--upgrade',
+    'Upgrade packages to latest versions') do
+        packages = DATA.get_installed_packages()
+        install_packages(packages)
+    end
+
+options.on('-h', '--help', 'Show this help message.') { puts(options) }
+options.on('-v', '--version', 'Show version information.') { puts( options.version() ) }
+options.parse!

@@ -1,0 +1,57 @@
+#!/usr/bin/ruby
+# Copyright (C) Alexandra Chace 2011-2013 <tchacex@gmail.com>
+# This file is part of Post.
+# Post is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# Post is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Lesser General Public License for more details.
+
+# You should have received a copy of the GNU Lesser General Public License
+# along with Post.  If not, see <http://www.gnu.org/licenses/>.
+
+require('rubygems')
+require('post')
+require('optparse')
+
+DATA = PackageDataBase.new()
+
+options = ARGV.options()
+options.set_summary_indent('    ')
+options.banner =    "Usage: postdb [OPTIONS] [PACKAGES]"
+options.version =   "Post Database 2.0 (2.0.0)"
+options.define_head "Copyright (C) Alexandra Chace 2011-2012 <tchacex@gmail.com>"
+
+options.on('--depends PACKAGE', String,
+    'Get dependencies.')  do |arg|
+        puts DATA.get_sync_data(arg)['dependencies'] if DATA.available?(arg)
+    end
+options.on('--version PACKAGE', String,
+    'Get latest version.') do |arg|
+        puts DATA.get_sync_data(arg)['version'] if DATA.available?(arg)
+    end
+options.on('--conflicts PACKAGE', String,
+    'Get conflicts.')  do |arg|
+        puts DATA.get_sync_data(arg)['conflicts'] if DATA.available?(arg)
+    end
+options.on('--description PACKAGE', String,
+    'Get conflicts.')  do |arg|
+        puts DATA.get_sync_data(arg)['description'] if DATA.available?(arg)
+    end
+options.on('--files PACKAGE', String,
+    'Get installed files.')  do |arg|
+        puts DATA.get_files(arg) if DATA.available?(arg)
+    end
+
+
+options.on('--availablepackages',
+    'Get available packages.')  { puts DATA.get_available_packages }
+options.on('--packages',
+    'Get installed packages.')  { puts DATA.get_installed_packages }
+
+options.on('-h', '--help', 'Show this help message.') { puts(options) }
+options.parse!
