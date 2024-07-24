@@ -1,0 +1,11 @@
+require("fileutils")
+require("yaml")
+
+file = open("../packageData", 'r')
+spec = YAML::load(file)
+
+FileUtils.cd("Post")
+system("git checkout 2.0")
+system("gem build post.gemspec")
+system("mkdir ../data/tmp/")
+system("cp post-#{spec['version']}.gem ../data/tmp/")

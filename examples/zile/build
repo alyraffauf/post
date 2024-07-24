@@ -1,0 +1,13 @@
+require("fileutils")
+require("yaml")
+
+file = open("../packageData", 'r')
+spec = YAML::load(file)
+
+
+system("tar xf #{spec['name']}-#{spec['version']}.tar.gz")
+FileUtils.cd("#{spec['name']}-#{spec['version']}")
+system("./configure --prefix=/usr")
+system("make")
+FileUtils.cd("src")
+system("make DESTDIR=../../data/ install")

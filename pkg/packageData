@@ -1,0 +1,15 @@
+---
+maintainer: Alexandra Chace <achace@student.gsu.edu>
+name: post
+version: 2.0
+release: 1
+license: GPL
+architecture: i686
+conflicts: ~
+dependencies: ~
+url: http://github.com/alyraffauf/Post
+description: A lightweight and feature rich package manager with a focus on speed and good design.
+source:
+- git://github.com/alyraffauf/Post.git
+build-dependencies:
+- ruby

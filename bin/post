@@ -1,0 +1,348 @@
+#!/usr/bin/ruby
+# Copyright (C) Alexandra Chace 2011-2015 <achace@student.gsu.edu>
+# This file is part of Post.
+# Post is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# Post is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Lesser General Public License for more details.
+
+# You should have received a copy of the GNU Lesser General Public License
+# along with Post.  If not, see <http://www.gnu.org/licenses/>.
+
+require('rubygems')
+require('post')
+require('optparse')
+require('yaml')
+require('open-uri')
+
+#### Get root access
+#if ENV["USER"] != "root"
+#    exec("sudo #{ENV['_']} #{ARGV.join(' ')}")
+#end
+
+###############################################################################
+#### Configuration Options
+###############################################################################
+
+STDOUT.sync = true
+VERSION = "2.4.7"
+PWD = Dir.pwd()
+OPTIONS = {}
+
+#### Loading config file.
+begin
+    CONFIG = YAML::load_file("/etc/post/config")
+    OPTIONS[:confirmation] = CONFIG["confirmation"]
+    OPTIONS[:root] = CONFIG["root"]
+    OPTIONS[:editor] = CONFIG["editor"]
+    OPTIONS[:verify] = CONFIG["verify"]
+rescue
+    OPTIONS[:confirmation] = true
+    OPTIONS[:root] = "/"
+    OPTIONS[:editor] = "/usr/bin/vi"
+    OPTIONS[:verify] = true
+end
+
+#### Starting database.
+DATA = PackageDataBase.new
+DATA.set_root(OPTIONS[:root])
+
+#### Setting up log file.
+begin
+    LOGFILE = File.open("/var/log/post.log", "a")
+    LOG = true
+rescue
+    LOG = false
+end
+
+def internet_connection?
+  begin
+    true if open("http://www.google.com/")
+  rescue
+    false
+  end
+end
+
+def post_setup
+    #### Database Updating
+    #puts("Loading:     Downloading package information.\n")
+    begin
+        DATA.update_database()
+    rescue
+    end
+end
+
+###############################################################################
+#### Tools
+###############################################################################
+
+def array_to_string(array)
+    list_string = ""
+    array.each { |item| list_string += "#{item.to_s} " }
+    return list_string
+end
+
+def log_puts(x, stdout = true)
+    ## Lets us write to logs and to stdout if we choose.
+    message = "#{Time.now}: #{x}"
+    if LOG
+        LOGFILE.puts(message)
+    elsif (stdout)
+        puts(x)
+    end
+end
+
+def get_plugin(symbol)
+    ## Loads a plugin providing a certain method.
+    Plugin.plugins.each do |plugin|
+        plugin = plugin.new(OPTIONS[:root], DATA)
+        if plugin.respond_to?(symbol)
+            return plugin
+        end
+    end
+end
+
+def confirmation(queue)
+    ## Simple function to confirm an operation on a given queue with the user.
+    return true if not OPTIONS[:confirmation]
+    return false if queue.empty?
+    puts("Queue:       #{queue.to_a.join(" ")}")
+    print('Confirm:     [y/n] ')
+    return true if gets.include?('y')
+end
+
+###############################################################################
+#### Package Installation Functions
+###############################################################################
+
+def install_local_packages(args)
+    ## Copies files over to a working directory and installs them.
+    args.each do |package|
+        path = File.join(File.expand_path(PWD), package)
+        FileUtils.cp(path, "/tmp/post/#{File.basename(path)}")
+    end
+    if confirmation(args)
+        args.each { |package| get_plugin(:install_package).do_install(File.basename(package)) }
+    end
+end
+
+def install_source_packages(args)
+    dep_resolver = get_plugin(:build_tree)
+    ## Fetches from a remote location(partition, server, or otherwise) and 
+    ## installs a list of packages and their dependencies.
+    queue = []
+
+    begin
+        args.each do |package|
+            dep_resolver.build_tree(package)
+            queue = dep_resolver.queue
+        end
+        if confirmation(queue)
+            queue.each do |package|
+                ## Fetches a package.
+                puts("Building:    Fetching pstbuild file.")
+
+                sync_data = DATA.get_sync_data(package)
+                file = "#{package}-#{sync_data['version']}-#{sync_data['architecture']}.pstbuild"
+
+                get_plugin(:fetch_build).fetch_build(package)
+                print("Edit #{file}? [y/n] ")
+                if gets.include?('y')
+                    system("#{OPTIONS[:editor]} /tmp/post/#{package}/packageData")
+                    system("#{OPTIONS[:editor]} /tmp/post/#{package}/build")
+                    system("#{OPTIONS[:editor]} /tmp/post/#{package}/install")
+                    system("#{OPTIONS[:editor]} /tmp/post/#{package}/remove")
+                end
+            end
+            queue.each do |package|
+                ## Separated just to insure sanity and avoid partial upgrades.
+                ## Installs a package.
+                puts("Building:    Getting source code.")
+                get_plugin(:build_package).get_source(package)
+                puts("Building:    Making package.")
+                get_plugin(:build_package).build_package(package)
+                log_puts("Installing:  #{package}")
+                get_plugin(:install_package).install_package(package)
+            end
+        end
+    rescue ConflictingEntry => error
+        log_puts(error.message)
+    end
+end
+
+def install_packages(args)
+    dep_resolver = get_plugin(:build_tree)
+    ## Fetches from a remote location(partition, server, or otherwise) and 
+    ## installs a list of packages and their dependencies.
+    queue = []
+
+    begin
+        args.each do |package|
+            dep_resolver.build_tree(package)
+            queue = dep_resolver.queue
+        end
+        if confirmation(queue)
+            threads = []
+            threads << Thread.new {
+                queue.each do |package|
+                    ## Fetches a package.
+                    get_plugin(:fetch_package).fetch_package(package)
+                    ## Verifies that all packages have been acquired without corruption
+                    if OPTIONS[:verify]
+                        begin
+                        log_puts("Verifying:   #{package}")
+                        get_plugin(:verify_package).verify_package(package)
+                        rescue NoMethodError => error
+                            log_puts("Warning:     No verification plugin")
+                        end
+                    end
+                end }
+            threads.each { |thread| thread.join }
+            queue.each do |package|
+                ## Separated just to insure sanity and avoid partial upgrades.
+                ## Installs a package.
+                log_puts("Installing:  #{package}")
+                get_plugin(:install_package).install_package(package)
+            end
+        end
+    rescue VerificationFailure => error
+        log_puts(error.message)
+    rescue ConflictingEntry => error
+        log_puts(error.message)
+    end
+end
+
+###############################################################################
+#### Package Removing Functions
+###############################################################################
+
+def remove_packages(args)
+    queue = []
+    args.each do |package|
+        queue.push(package) if DATA.installed?(package) and not queue.include?(package)
+        for pkg in DATA.get_installed_packages()
+            if DATA.get_installed_data(pkg)['dependencies'].include?(package) and not queue.include?(pkg)
+                queue.push(pkg)
+            end
+        end
+    end
+    if confirmation(queue)
+        queue.each { |package| log_puts("Removing:    #{package}") }
+        queue.each { |package| get_plugin(:remove_package).remove_package(package) }
+    end
+end
+
+###############################################################################
+#### Argument Handling
+###############################################################################
+
+options = ARGV.options()
+options.set_summary_indent('    ')
+options.banner =    "Usage: post [OPTIONS] [PACKAGES]"
+options.version =   "Post #{VERSION}"
+options.define_head "Copyright (C) Alexandra Chace 2011-2015 <achace@student.gsu.edu>"
+
+#### Settings
+
+options.on('--root=OPT', String, "Change the root filesystem." ) do |arg|
+        OPTIONS[:root] = arg
+        DATA.set_root(OPTIONS[:root])
+        DATA.update_database()
+    end
+options.on('--noconfirmation', "Do not ask for user confirmation." ) { OPTIONS[:confirmation] = false }
+
+options.separator("")
+
+#### Package management options.
+
+options.on('-i', '--fetch PACKAGES', Array,
+    'Install a package.')  { |args| 
+        post_setup
+        install_packages(args)
+    }
+
+options.on('-s', '--source PACKAGES', Array,
+    'Install a source package.')  { |args| 
+        post_setup
+        install_source_packages(args)
+    }
+
+options.on('-l', '--install PACKAGES', Array,
+    'Install a local package.')  { |args| 
+        post_setup
+        install_local_packages(args)
+    }
+
+options.on('-r', '--remove PACKAGES', Array,
+    'Remove a package.') { |args| 
+        post_setup
+        remove_packages(args)
+    }
+options.on('-u', '--upgrade',
+    'Upgrade packages to latest versions.') do
+        post_setup
+        packages = DATA.get_installed_packages()
+        install_packages(packages)
+    end
+
+options.separator("")
+
+#### Building packages.
+
+options.on_tail("-m", "--makepkg",
+    "Make a package.") do
+        MakePackage.new("packageData")
+    end
+
+#### Database options.
+
+options.on('--depends PACKAGE', String,
+    'Get dependencies.')  do |arg|
+        if DATA.available?(arg)
+            puts(array_to_string(DATA.get_sync_data(arg)['dependencies']))
+        end
+    end
+options.on('--version PACKAGE', String,
+    'Get latest version.') do |arg|
+        if DATA.available?(arg)
+            puts(array_to_string(DATA.get_sync_data(arg)['version']))
+        end
+    end
+options.on('--conflicts PACKAGE', String,
+    'Get conflicting packages.')  do |arg|
+        if DATA.available?(arg)
+            puts(array_to_string(DATA.get_sync_data(arg)['conflicts']))
+        end
+    end
+options.on('--description PACKAGE', String,
+    'Get package description.')  do |arg|
+        puts(DATA.get_sync_data(arg)['description']) if DATA.available?(arg)
+    end
+options.on('--files PACKAGE', String,
+    'Get installed files.')  do |arg|
+        if DATA.available?(arg)
+            print(array_to_string(DATA.get_files(arg)))
+        end
+    end
+options.on('--availablepackages',
+    'Get available packages.')  do
+        puts(array_to_string(DATA.get_available_packages))
+    end
+options.on('--packages',
+    'Get installed packages.')  do
+        puts(array_to_string(DATA.get_installed_packages))
+    end
+
+options.separator("")
+
+#### Help and Version
+
+options.on('-h', '--help', 'Show this help message.') { puts(options) }
+options.on('-v', '--version', 'Show version information.') { puts(options.version) }
+
+options.parse!

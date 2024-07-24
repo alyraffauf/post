@@ -1,0 +1,15 @@
+maintainer: Alexandra Chace <achace@student.gsu.edu>
+name: zile
+version: 2.3.9
+license: GPL
+architecture: i386
+conflicts: ~
+dependencies: ~
+url: http://www.gnu.org/software/zile/
+description:  A lightweight emacs clone.
+source:
+- http://ftp.gnu.org/gnu/zile/zile-2.3.9.tar.gz
+build-dependencies:
+- gcc
+- make
+- ncurses
