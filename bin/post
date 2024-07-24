@@ -1,0 +1,133 @@
+#!/usr/bin/ruby
+# Copyright (C) Alexandra Chace 2011-2012 <ialyraffauf@gmail.com>
+# This file is part of Post.
+# Post is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+
+# Post is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Lesser General Public License for more details.
+
+# You should have received a copy of the GNU Lesser General Public License
+# along with Post.  If not, see <http://www.gnu.org/licenses/>.
+
+STDOUT.sync = true
+PWD = Dir.pwd()
+
+require('rubygems')
+require('post')
+require('optparse')
+
+DATA = PackageDataBase.new()
+
+if (Process.uid == 0) and file_exists(DATA.get_channel()['url'] + '/info.tar')
+    puts('Loading:     Downloading package information.')
+    DATA.update_database()
+end
+
+def user_confirmation(queue)
+    if (queue.empty?)
+        return false
+    end
+    puts("Queue:       #{queue.to_a().join(" ")}")
+    print('Confirm:     [y/n] ')
+    confirm_transaction = gets()
+    return true if confirm_transaction.include?('y')
+end
+
+def install_local_packages(argument_packages)
+    package_queue = PackageList.new()
+    
+    if user_confirmation(argument_packages)
+        full_paths = []
+        for package in argument_packages
+            path = File.join(File.expand_path(PWD), package)
+            full_paths.push(path)
+        end
+        
+        for package in full_paths
+            install = Install.new()
+            FileUtils.cp(package, "/tmp/post/#{File.basename(package)}")
+            install.install_package(File.basename(package))
+        end
+    end
+end
+
+def install_packages(argument_packages)
+    package_queue = PackageList.new()
+    for package in argument_packages
+        begin
+            package_queue.push(package)
+        rescue ConflictingEntry => error
+            puts(error.message)
+        end
+    end
+    
+    fetch = Fetch.new(package_queue)
+
+    unless (package_queue.empty?)
+        if user_confirmation(package_queue)
+            error = false
+            for package in package_queue
+                error = true if not fetch.fetch_package(package)
+            end
+            begin
+                fetch.install_queue() unless (error)
+                puts("Error:       All files were not fetched.") if (error)
+            rescue MismatchedHash => error
+                puts(error.message)
+            end
+        end
+    end
+end
+
+def remove_packages(argument_packages)
+    package_queue = PackageList.new()
+    for package in argument_packages
+        package_queue.set(package) if DATA.installed?(package)
+    end
+    
+    erase = Erase.new(package_queue)
+    
+    confirmation = user_confirmation(erase.get_queue())
+    if (confirmation)
+        for package in erase.get_queue()
+            puts("Removing:    #{package}")
+            begin
+                puts "remov"
+                erase.remove_package(package)
+            rescue MissingFile => error
+                puts(error.message)
+            end
+        end
+    end
+end
+
+def upgrade_packages()
+    packages = DATA.get_installed_packages()
+    install_packages(packages)
+end
+
+options = ARGV.options()
+options.set_summary_indent('    ')
+options.banner =    "Usage: post [OPTIONS] [PACKAGES]"
+options.version =   "Post 1.5 (1.5.0)"
+options.define_head "Copyright (C) Alexandra Chace 2011-2012 <ialyraffauf@gmail.com>"
+
+if (Process.uid == 0)
+    options.on('-i', '--fetch=', Array,
+        'Install or update a package.')  { |args| install_packages(args) }
+    options.on('-f', '--install=', Array,
+        'Install or update a package locally.')  { |args| install_local_packages(args) }
+    options.on('-r', '--erase=', Array,
+         'Erase a package.') { |args| remove_packages(args) }
+    options.on('-u', '--upgrade',
+         'Upgrade all packages to their latest versions') { upgrade_packages() }
+end
+
+options.on('-h', '--help', 'Show this help message.') { puts(options) }
+options.on('-v', '--version', 'Show version information.') { puts( options.version() ) }
+options.parse!
