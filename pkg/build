@@ -1,0 +1,9 @@
+require("fileutils")
+require("yaml")
+
+file = open("../packageData", 'r')
+spec = YAML::load(file)
+
+FileUtils.cd("Post")
+ENV['DESTDIR'] = "../data/"
+system("env ruby build.rb")
